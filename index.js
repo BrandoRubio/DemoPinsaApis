@@ -10,7 +10,6 @@ app.use(cors({
     origin: ['http://localhost:8100', 'http://localhost:8101', 'https://finsa-x1vt.onrender.com'],
     credentials: true
 }));
-app.use(cors());
 
 // ─── BODY PARSER ───────────────────────────────────────────────
 app.use(express.json());
