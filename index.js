@@ -7,7 +7,7 @@ const port = process.env.PORT || 3000;
 
 // ─── CORS ──────────────────────────────────────────────────────
 app.use(cors({
-    origin: ['http://localhost:8100', 'http://localhost:8101', 'https://mes-r495.onrender.com'],
+    origin: ['http://localhost:8100', 'http://localhost:8101', 'https://finsa-x1vt.onrender.com'],
     credentials: true
 }));
 app.use(cors());
