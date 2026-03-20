@@ -313,7 +313,7 @@ router.post('/sensorData', async (req, res) => {
         device_id,
         plant_id,
         value:       row.value,
-        recorded_at: row.recorded_at
+        time: row.recorded_at
       };
 
       // Notificar suscriptores
