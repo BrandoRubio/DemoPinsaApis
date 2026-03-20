@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../../database/pool');
+const { notifySensorData } = require('../websocket/websocket');
 
 router.get('/sensorsData', async (req, res) => {
   const { sensors, from, to, limit } = req.query;
@@ -245,100 +246,98 @@ router.get('/sensorsDataHM', async (req, res) => {
 // POST ingest sensor data — no authenticateToken, uses device token
 // Body: { token: 'device_token', var: 'temp', value: 23.5 }
 // or bulk: { token: 'device_token', readings: [{ var: 'temp', value: 23.5 }, ...] }
-router.post('/sensor-data', async (req, res) => {
-  const { token } = req.body;
+router.post('/sensorData', async (req, res) => {
+  const { token, items } = req.body;
 
-  if (!token) {
-    return res.status(400).json({ error: true, message: 'device token is required' });
-  }
-
-  // Resolve device by token
-  const deviceResult = await pool.query(
-    `SELECT device_id FROM devices WHERE token = $1 AND is_active = TRUE`,
-    [token]
-  );
-
-  if (deviceResult.rowCount === 0) {
-    return res.status(404).json({ error: true, message: 'Device not found or inactive' });
-  }
-
-  const device_id = deviceResult.rows[0].device_id;
-
-  // Normalize: accept single reading or array
-  let readings = [];
-  if (Array.isArray(req.body.readings)) {
-    readings = req.body.readings;
-  } else {
-    const { var: varCode, value } = req.body;
-    if (!varCode || value === undefined) {
-      return res.status(400).json({ error: true, message: 'var and value are required' });
-    }
-    readings = [{ var: varCode, value }];
-  }
-
-  if (readings.length === 0) {
-    return res.status(400).json({ error: true, message: 'readings array is empty' });
+  if (!token || !items || !Array.isArray(items)) {
+    return res.status(400).json({ error: true, message: 'token and items array are required' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const inserted = [];
+    // Resolver device por token
+    const deviceResult = await client.query(
+      `SELECT d.device_id, d.plant_id FROM devices d
+       WHERE d.token = $1 AND d.is_active = TRUE LIMIT 1`,
+      [token]
+    );
 
-    for (const reading of readings) {
-      const { var: varCode, value, recorded_at } = reading;
+    if (deviceResult.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: true, message: 'Device not found or inactive' });
+    }
 
-      if (!varCode || value === undefined) {
-        continue; // skip invalid entries silently
-      }
+    const { device_id, plant_id } = deviceResult.rows[0];
+    const results = [];
 
-      // Find or auto-create sensor for this var on this device
-      let sensorResult = await client.query(
-        `SELECT sensor_id FROM sensors WHERE device_id = $1 AND var = $2`,
-        [device_id, varCode]
-      );
+    for (const { sensor_var, value } of items) {
+      if (!sensor_var || value === undefined) continue;
 
       let sensor_id;
 
-      if (sensorResult.rowCount === 0) {
-        // Auto-create sensor with defaults
-        const newSensor = await client.query(
-          `INSERT INTO sensors (device_id, var, title, icon)
-           VALUES ($1, $2, $3, $4)
-           RETURNING sensor_id`,
-          [device_id, varCode, varCode.toUpperCase(), 'help-circle-outline']
-        );
-        sensor_id = newSensor.rows[0].sensor_id;
-      } else {
-        sensor_id = sensorResult.rows[0].sensor_id;
-      }
-
-      // Insert sensor data
-      const dataResult = await client.query(
-        `INSERT INTO sensor_data (sensor_id, value, recorded_at)
-         VALUES ($1, $2, $3)
-         RETURNING data_id, sensor_id, value, recorded_at`,
-        [sensor_id, value, recorded_at || new Date()]
+      // Buscar sensor por var y device_id
+      const sensorQuery = await client.query(
+        `SELECT sensor_id FROM sensors
+         WHERE device_id = $1 AND var = $2 LIMIT 1`,
+        [device_id, sensor_var]
       );
 
-      inserted.push(dataResult.rows[0]);
+      if (sensorQuery.rowCount === 0) {
+        // Auto-crear sensor si no existe
+        const newSensor = await client.query(
+          `INSERT INTO sensors (device_id, var, title, icon, is_active)
+           VALUES ($1, $2, $3, $4, TRUE)
+           RETURNING sensor_id`,
+          [device_id, sensor_var, sensor_var.toUpperCase(), 'help-circle-outline']
+        );
+        sensor_id = newSensor.rows[0].sensor_id;
+        results.push({ sensor_var, status: 'sensor auto-created' });
+      } else {
+        sensor_id = sensorQuery.rows[0].sensor_id;
+      }
+
+      // Insertar dato
+      const insertResult = await client.query(
+        `INSERT INTO sensor_data (sensor_id, value, recorded_at)
+         VALUES ($1, $2, NOW())
+         RETURNING data_id, value, recorded_at`,
+        [sensor_id, value]
+      );
+
+      const row     = insertResult.rows[0];
+      const payload = {
+        sensor_id,
+        sensor_var,
+        device_id,
+        plant_id,
+        value:       row.value,
+        recorded_at: row.recorded_at
+      };
+
+      // Notificar suscriptores
+      notifySensorData(sensor_id, { data: payload });
+      /*notifyDeviceData(device_id,  { data: payload });
+      notifyPlantData(plant_id,    { data: payload });*/
+
+      results.push({ sensor_var, status: 'ok' });
     }
 
     await client.query('COMMIT');
-    res.status(201).json({
-      error: false,
+
+    res.json({
+      error:   false,
       message: 'ok',
-      inserted_count: inserted.length,
-      data: inserted
+      data:    results
     });
+
   } catch (e) {
     await client.query('ROLLBACK');
-    console.error('Error inserting sensor data:', e);
+    console.error('Error inserting sensor data bulk:', e);
     res.status(500).json({ error: true, message: 'Error inserting sensor data' });
   } finally {
     client.release();
   }
 });
-
 module.exports = router;

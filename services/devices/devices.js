@@ -144,21 +144,56 @@ router.get('/machinesAndSensorsByCompany/:companyId', authenticateToken, async (
 
 router.get('/machinesAndSensorsByOrganizations', authenticateToken, async (req, res) => {
   const { organizations } = req.query;
+  const user_id = req.user.user_id;
 
   if (!organizations) {
     return res.status(400).json({ error: true, message: 'organizations param is required' });
   }
 
-  const plantIds = String(organizations)
+  const requestedIds = String(organizations)
     .split(',')
     .map(id => parseInt(id.trim()))
     .filter(id => !isNaN(id));
 
-  if (plantIds.length === 0) {
+  if (requestedIds.length === 0) {
     return res.status(400).json({ error: true, message: 'No valid plant IDs provided' });
   }
 
   try {
+    const caller = await pool.query(
+      `SELECT role, is_master FROM users WHERE user_id = $1`,
+      [user_id]
+    );
+    const { is_master } = caller.rows[0];
+
+    let plantIds = requestedIds;
+
+    if (!is_master) {
+      // Filtrar solo plantas a las que el usuario tiene acceso
+      const accessResult = await pool.query(
+        `SELECT DISTINCT pl.plant_id
+         FROM plants pl
+         WHERE pl.plant_id = ANY($1::int[])
+           AND (
+             EXISTS (
+               SELECT 1 FROM plant_access pla
+               WHERE pla.plant_id = pl.plant_id AND pla.user_id = $2
+             )
+             OR EXISTS (
+               SELECT 1 FROM park_access pa
+               WHERE pa.park_id = pl.park_id AND pa.user_id = $2
+             )
+           )`,
+        [requestedIds, user_id]
+      );
+
+      plantIds = accessResult.rows.map(r => r.plant_id);
+
+      if (plantIds.length === 0) {
+        return res.status(403).json({ error: true, message: 'Access denied to requested plants' });
+      }
+    }
+
     const result = await pool.query(
       `SELECT
          d.device_id        AS machine_id,
@@ -195,16 +230,16 @@ router.get('/machinesAndSensorsByOrganizations', authenticateToken, async (req, 
          AND d.token <> ''
          AND d.is_active = TRUE
        GROUP BY d.device_id, d.name, d.token, d.type, d.plant_id, pl.name
-       ORDER BY d.device_id ASC`,
+       ORDER BY pl.name ASC, d.name ASC`,
       [plantIds]
     );
-
     res.json({
       error: false,
       message: 'ok',
       total_results: result.rows.length,
       data: result.rows
     });
+
   } catch (e) {
     console.error('Error fetching machines and sensors by organizations:', e);
     res.status(500).json({ error: true, message: 'Error fetching machines and sensors by organizations' });
