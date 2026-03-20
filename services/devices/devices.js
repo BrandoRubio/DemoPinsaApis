@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../../middleware/authenticateToken');
 const pool = require('../../database/pool');
+const checkPlantAccess = require('../../middleware/checkPlantAccess');
 
 // GET devices (optionally filtered by plant_id)
 router.get('/devices', authenticateToken, async (req, res) => {
@@ -73,10 +74,10 @@ router.get('/machinesAndSensors/:userId', authenticateToken, async (req, res) =>
     );
 
     res.json({
-      error:        false,
-      message:      'ok',
+      error: false,
+      message: 'ok',
       total_results: result.rows.length,
-      data:          result.rows
+      data: result.rows
     });
   } catch (e) {
     console.error('Error fetching machines and sensors:', e);
@@ -130,10 +131,10 @@ router.get('/machinesAndSensorsByCompany/:companyId', authenticateToken, async (
     );
 
     res.json({
-      error:         false,
-      message:       'ok',
+      error: false,
+      message: 'ok',
       total_results: result.rows.length,
-      data:          result.rows
+      data: result.rows
     });
   } catch (e) {
     console.error('Error fetching machines and sensors by company:', e);
@@ -199,10 +200,10 @@ router.get('/machinesAndSensorsByOrganizations', authenticateToken, async (req, 
     );
 
     res.json({
-      error:         false,
-      message:       'ok',
+      error: false,
+      message: 'ok',
       total_results: result.rows.length,
-      data:          result.rows
+      data: result.rows
     });
   } catch (e) {
     console.error('Error fetching machines and sensors by organizations:', e);
@@ -237,58 +238,43 @@ router.get('/plant/:plant_id/devices-sensors', authenticateToken, async (req, re
   const user_id = req.user.user_id;
 
   try {
-    // Verificar acceso a la planta
-    const access = await pool.query(
-      `SELECT 1 FROM plant_access
-       WHERE plant_id = $1 AND user_id = $2`,
-      [plant_id, user_id]
-    );
-
-    if (access.rowCount === 0) {
+    const hasAccess = await checkPlantAccess(user_id, plant_id);
+    if (!hasAccess) {
       return res.status(403).json({ error: true, message: 'Access denied to this plant' });
     }
 
     const result = await pool.query(
       `SELECT
-     d.device_id,
-     d.name,
-     d.token,
-     d.type,
-     d.description,
-     d.is_active,
-     COALESCE(
-       json_agg(
-         jsonb_build_object(
-           'sensor_id',       s.sensor_id,
-           'var',             s.var,
-           'title',           s.title,
-           'icon',            s.icon,
-           'unit',            s.unit,
-           'is_active',       s.is_active,
-           'last_value',      sd.value,
-           'last_recorded_at',sd.recorded_at
-         )
-       ) FILTER (WHERE s.sensor_id IS NOT NULL),
-       '[]'
-     ) AS sensors
-   FROM devices d
-   LEFT JOIN sensors s ON s.device_id = d.device_id AND s.is_active = TRUE
-   LEFT JOIN LATERAL (
-     SELECT value, recorded_at
-     FROM sensor_data
-     WHERE sensor_id = s.sensor_id
-     ORDER BY recorded_at DESC
-     LIMIT 1
-   ) sd ON TRUE
-   WHERE d.plant_id = $1
-     AND d.is_active = TRUE
-   GROUP BY d.device_id, d.name, d.token, d.type, d.description, d.is_active
-   ORDER BY d.name ASC`,
+         d.device_id, d.name, d.token, d.type, d.description, d.is_active,
+         COALESCE(
+           json_agg(
+             jsonb_build_object(
+               'sensor_id',        s.sensor_id,
+               'var',              s.var,
+               'title',            s.title,
+               'icon',             s.icon,
+               'unit',             s.unit,
+               'is_active',        s.is_active,
+               'last_value',       sd.value,
+               'last_recorded_at', sd.recorded_at
+             )
+           ) FILTER (WHERE s.sensor_id IS NOT NULL),
+           '[]'
+         ) AS sensors
+       FROM devices d
+       LEFT JOIN sensors s ON s.device_id = d.device_id AND s.is_active = TRUE
+       LEFT JOIN LATERAL (
+         SELECT value, recorded_at FROM sensor_data
+         WHERE sensor_id = s.sensor_id
+         ORDER BY recorded_at DESC LIMIT 1
+       ) sd ON TRUE
+       WHERE d.plant_id = $1 AND d.is_active = TRUE
+       GROUP BY d.device_id, d.name, d.token, d.type, d.description, d.is_active
+       ORDER BY d.name ASC`,
       [plant_id]
     );
 
     res.json({ error: false, message: 'ok', data: result.rows });
-
   } catch (e) {
     console.error('Error fetching devices with sensors:', e);
     res.status(500).json({ error: true, message: 'Error fetching devices with sensors', data: [] });

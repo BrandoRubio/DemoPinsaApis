@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../../middleware/authenticateToken');
 const pool = require('../../database/pool');
+const checkPlantAccess = require('../../middleware/checkPlantAccess');
 
 // GET dashboards (optionally filtered by plant_id)
 router.get('/dashboards', authenticateToken, async (req, res) => {
@@ -34,23 +35,26 @@ router.get('/dashboards/:dashboard_id/widgets', authenticateToken, async (req, r
   const user_id = req.user.user_id;
 
   try {
-    // Verificar acceso — el usuario debe tener acceso a la planta del dashboard
-    const access = await pool.query(
-      `SELECT 1 FROM plant_access pa
-       JOIN dashboards d ON d.plant_id = pa.plant_id
-       WHERE d.dashboard_id = $1 AND pa.user_id = $2`,
-      [dashboard_id, user_id]
+    // Obtener plant_id del dashboard
+    const dashResult = await pool.query(
+      `SELECT plant_id FROM dashboards WHERE dashboard_id = $1`,
+      [dashboard_id]
     );
 
-    if (access.rowCount === 0) {
+    if (dashResult.rowCount === 0) {
+      return res.status(404).json({ error: true, message: 'Dashboard not found', data: [] });
+    }
+
+    const plant_id = dashResult.rows[0].plant_id;
+
+    const hasAccess = await checkPlantAccess(user_id, plant_id);
+    if (!hasAccess) {
       return res.status(403).json({ error: true, message: 'Access denied' });
     }
 
     const result = await pool.query(
       `SELECT
-         -- detalle del dashboard
-         d.dashboard_id,
-         d.plant_id,
+         d.dashboard_id, d.plant_id,
          pl.name          AS plant_name,
          pk.park_id,
          pk.name          AS park_name,
@@ -59,8 +63,6 @@ router.get('/dashboards/:dashboard_id/widgets', authenticateToken, async (req, r
          d.index          AS dashboard_index,
          d.created_at     AS dashboard_created_at,
          d.updated_at     AS dashboard_updated_at,
-
-         -- widgets como array anidado
          COALESCE(
            json_agg(
              jsonb_build_object(
@@ -79,7 +81,6 @@ router.get('/dashboards/:dashboard_id/widgets', authenticateToken, async (req, r
            ) FILTER (WHERE w.widget_id IS NOT NULL),
            '[]'
          ) AS widgets
-
        FROM dashboards d
        JOIN plants  pl ON pl.plant_id = d.plant_id
        JOIN parks   pk ON pk.park_id  = pl.park_id
@@ -91,12 +92,7 @@ router.get('/dashboards/:dashboard_id/widgets', authenticateToken, async (req, r
       [dashboard_id]
     );
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: true, message: 'Dashboard not found', data: [] });
-    }
-
     res.json({ error: false, message: 'ok', data: result.rows });
-
   } catch (e) {
     console.error('Error fetching dashboard widgets:', e);
     res.status(500).json({ error: true, message: 'Error fetching dashboard widgets', data: [] });
@@ -105,7 +101,7 @@ router.get('/dashboards/:dashboard_id/widgets', authenticateToken, async (req, r
 
 router.get('/plant/:plant_id/dashboards', authenticateToken, async (req, res) => {
   const { plant_id } = req.params;
-  const user_id      = req.user.user_id;
+  const user_id = req.user.user_id;
 
   try {
     const caller = await pool.query(

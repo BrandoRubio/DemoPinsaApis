@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../../middleware/authenticateToken');
 const pool = require('../../database/pool');
+const checkPlantAccess = require('../../middleware/checkPlantAccess');
 
 // ─── HELPERS ──────────────────────────────────────────────────
 
@@ -103,37 +104,32 @@ router.get('/parks/:park_id/users', authenticateToken, async (req, res) => {
 // GET usuarios de una planta — excluye master y usuarios de parque
 router.get('/plants/:plant_id/users', authenticateToken, async (req, res) => {
     const { plant_id } = req.params;
-    const caller = await getCallerRole(req.user.user_id);
-
-    if (!caller.is_master) {
-        const access = await pool.query(
-            `SELECT 1 FROM plant_access WHERE plant_id = $1 AND user_id = $2`,
-            [plant_id, req.user.user_id]
-        );
-        if (access.rowCount === 0) {
-            return res.status(403).json({ error: true, message: 'Access denied to this plant' });
-        }
-    }
+    const user_id = req.user.user_id;
 
     try {
+        const hasAccess = await checkPlantAccess(user_id, plant_id);
+        if (!hasAccess) {
+            return res.status(403).json({ error: true, message: 'Access denied to this plant' });
+        }
+
         const result = await pool.query(
             `SELECT
          u.user_id, u.name, u.email, u.role, u.is_active,
-         pla.role     AS plant_role,
+         pla.role      AS plant_role,
          pla.granted_at
        FROM plant_access pla
        JOIN users u ON u.user_id = pla.user_id
        WHERE pla.plant_id = $1
          AND u.is_master = FALSE
          AND u.user_id NOT IN (
-           SELECT pa.user_id
-           FROM park_access pa
+           SELECT pa.user_id FROM park_access pa
            JOIN plants pl ON pl.park_id = pa.park_id
            WHERE pl.plant_id = $1
          )
        ORDER BY u.name ASC`,
             [plant_id]
         );
+
         res.json({ error: false, message: 'ok', data: result.rows });
     } catch (e) {
         console.error('Error fetching plant users:', e);

@@ -32,7 +32,7 @@ router.get('/parks-plants', authenticateToken, async (req, res) => {
       `SELECT role, is_master FROM users WHERE user_id = $1`,
       [user_id]
     );
-    const { role, is_master } = caller.rows[0];
+    const { is_master } = caller.rows[0];
 
     let result;
 
@@ -66,14 +66,15 @@ router.get('/parks-plants', authenticateToken, async (req, res) => {
          ORDER BY p.name ASC`
       );
 
-      // ─── NIVEL PARQUE — ve su parque y todas sus plantas ──────
-    } else if (role === 'admin' || role === 'viewer') {
+    } else {
+      // ─── DETECTAR NIVEL por park_access ───────────────────
       const hasParkAccess = await pool.query(
         `SELECT 1 FROM park_access WHERE user_id = $1 LIMIT 1`,
         [user_id]
       );
 
       if (hasParkAccess.rowCount > 0) {
+        // ─── NIVEL PARQUE ──────────────────────────────────
         result = await pool.query(
           `SELECT
              p.park_id, p.name, p.description,
@@ -104,13 +105,13 @@ router.get('/parks-plants', authenticateToken, async (req, res) => {
           [user_id]
         );
 
-        // ─── NIVEL PLANTA — ve solo parque padre + sus plantas ──
       } else {
+        // ─── NIVEL PLANTA — solo el parque padre y sus plantas asignadas
         result = await pool.query(
           `SELECT
              p.park_id, p.name, p.description,
              p.latitude, p.longitude, p.address, p.timezone,
-             'viewer' AS role,
+             pla.role AS role,
              COALESCE(
                json_agg(
                  jsonb_build_object(
@@ -127,11 +128,11 @@ router.get('/parks-plants', authenticateToken, async (req, res) => {
                '[]'
              ) AS plants
            FROM plant_access pla
-           JOIN plants  pl ON pl.plant_id  = pla.plant_id AND pl.is_active = TRUE
-           JOIN parks   p  ON p.park_id    = pl.park_id   AND p.is_active  = TRUE
+           JOIN plants pl ON pl.plant_id = pla.plant_id AND pl.is_active = TRUE
+           JOIN parks  p  ON p.park_id   = pl.park_id   AND p.is_active  = TRUE
            WHERE pla.user_id = $1
            GROUP BY p.park_id, p.name, p.description,
-                    p.latitude, p.longitude, p.address, p.timezone
+                    p.latitude, p.longitude, p.address, p.timezone, pla.role
            ORDER BY p.name ASC`,
           [user_id]
         );
