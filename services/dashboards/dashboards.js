@@ -105,15 +105,32 @@ router.get('/dashboards/:dashboard_id/widgets', authenticateToken, async (req, r
 
 router.get('/plant/:plant_id/dashboards', authenticateToken, async (req, res) => {
   const { plant_id } = req.params;
-  const user_id = req.user.user_id;
+  const user_id      = req.user.user_id;
 
   try {
-    const access = await pool.query(
-      `SELECT 1 FROM plant_access WHERE plant_id = $1 AND user_id = $2`,
-      [plant_id, user_id]
+    const caller = await pool.query(
+      `SELECT role, is_master FROM users WHERE user_id = $1`,
+      [user_id]
     );
-    if (access.rowCount === 0) {
-      return res.status(403).json({ error: true, message: 'Access denied to this plant' });
+    const { is_master } = caller.rows[0];
+
+    // Verificar acceso según nivel
+    if (!is_master) {
+      const access = await pool.query(
+        `SELECT 1 FROM plant_access
+         WHERE plant_id = $1 AND user_id = $2
+
+         UNION
+
+         SELECT 1 FROM park_access pa
+         JOIN plants pl ON pl.park_id = pa.park_id
+         WHERE pl.plant_id = $1 AND pa.user_id = $2`,
+        [plant_id, user_id]
+      );
+
+      if (access.rowCount === 0) {
+        return res.status(403).json({ error: true, message: 'Access denied to this plant' });
+      }
     }
 
     const result = await pool.query(
