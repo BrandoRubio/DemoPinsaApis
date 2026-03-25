@@ -297,13 +297,13 @@ router.get('/plant/:plant_id/devices-sensors', authenticateToken, async (req, re
            '[]'
          ) AS sensors
        FROM devices d
-       LEFT JOIN sensors s ON s.device_id = d.device_id AND s.is_active = TRUE
+       LEFT JOIN sensors s ON s.device_id = d.device_id
        LEFT JOIN LATERAL (
          SELECT value, recorded_at FROM sensor_data
          WHERE sensor_id = s.sensor_id
          ORDER BY recorded_at DESC LIMIT 1
        ) sd ON TRUE
-       WHERE d.plant_id = $1 AND d.is_active = TRUE
+       WHERE d.plant_id = $1
        GROUP BY d.device_id, d.name, d.token, d.type, d.description, d.is_active
        ORDER BY d.name ASC`,
       [plant_id]
